@@ -1,0 +1,17 @@
+[package]
+name = "simulator"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+orderbook-core = { path = "../orderbook-core" }
+market-maker = { path = "../market-maker" }
+crossbeam-channel.workspace = true
+serde.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+rand.workspace = true
+rand_distr.workspace = true
+chrono.workspace = true
+dashmap.workspace = true
