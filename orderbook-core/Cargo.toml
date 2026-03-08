@@ -1,0 +1,23 @@
+[package]
+name = "orderbook-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+crossbeam.workspace = true
+crossbeam-epoch.workspace = true
+crossbeam-skiplist.workspace = true
+crossbeam-channel.workspace = true
+dashmap.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+rand.workspace = true
+
+[[bench]]
+name = "orderbook_bench"
+harness = false
