@@ -1,0 +1,14 @@
+[package]
+name = "stat-arb"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+orderbook-core = { path = "../orderbook-core" }
+nalgebra.workspace = true
+serde.workspace = true
+tracing.workspace = true
+rand.workspace = true
+rand_distr.workspace = true
+crossbeam-channel.workspace = true
