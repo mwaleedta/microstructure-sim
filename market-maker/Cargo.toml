@@ -1,0 +1,13 @@
+[package]
+name = "market-maker"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+orderbook-core = { path = "../orderbook-core" }
+crossbeam-channel.workspace = true
+serde.workspace = true
+tracing.workspace = true
+rand.workspace = true
+rand_distr.workspace = true
