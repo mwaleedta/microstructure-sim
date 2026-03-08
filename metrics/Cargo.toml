@@ -1,0 +1,15 @@
+[package]
+name = "metrics-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+orderbook-core = { path = "../orderbook-core" }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+chrono.workspace = true
+crossbeam-channel.workspace = true
