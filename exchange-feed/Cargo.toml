@@ -1,0 +1,18 @@
+[package]
+name = "exchange-feed"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+orderbook-core = { path = "../orderbook-core" }
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+flate2.workspace = true
+crossbeam-channel.workspace = true
+chrono.workspace = true
