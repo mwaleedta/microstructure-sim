@@ -9,7 +9,7 @@ use orderbook_core::book::OrderBook;
 use orderbook_core::types::*;
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::connect_async;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 // ---------------------------------------------------------------------------
 // Coinbase message types
@@ -95,20 +95,16 @@ pub async fn stream_orderbook(
             _ => continue,
         };
 
-        let message: CoinbaseMessage = match serde_json::from_str(&text) {
+        let cb_msg: CoinbaseMessage = match serde_json::from_str(&text) {
             Ok(m) => m,
             Err(e) => {
-                debug!("Skipping unparseable Coinbase message: {}", e);
+                debug!("Failed to parse Coinbase message: {}", e);
                 continue;
             }
         };
 
-        match message {
-            CoinbaseMessage::Snapshot {
-                product_id,
-                bids,
-                asks,
-            } => {
+        match cb_msg {
+            CoinbaseMessage::Snapshot { product_id, bids, asks } => {
                 info!(
                     "Coinbase snapshot for {}: {} bids, {} asks",
                     product_id,
@@ -126,32 +122,33 @@ pub async fn stream_orderbook(
                 };
                 apply_depth_update(&book, &depth_update);
             }
-            CoinbaseMessage::L2Update {
-                product_id,
-                time,
-                changes,
-            } => {
+            CoinbaseMessage::L2Update { product_id, time: _, changes } => {
                 let mut bid_updates = Vec::new();
                 let mut ask_updates = Vec::new();
 
-                for (side, price, qty) in &changes {
-                    let p = price.parse::<f64>().unwrap_or(0.0);
-                    let q = qty.parse::<f64>().unwrap_or(0.0);
+                for (side, price_str, qty_str) in &changes {
+                    let price: f64 = match price_str.parse() {
+                        Ok(p) => p,
+                        Err(_) => continue,
+                    };
+                    let qty: f64 = match qty_str.parse() {
+                        Ok(q) => q,
+                        Err(_) => continue,
+                    };
+
                     match side.as_str() {
-                        "buy" => bid_updates.push((p, q)),
-                        "sell" => ask_updates.push((p, q)),
-                        _ => {}
+                        "buy" => bid_updates.push((Price::from_f64(price), Quantity::from_f64(qty))),
+                        "sell" => ask_updates.push((Price::from_f64(price), Quantity::from_f64(qty))),
+                        _ => {
+                            debug!("Unknown side in Coinbase L2 update: {}", side);
+                        }
                     }
                 }
-
-                let timestamp_ns = chrono::DateTime::parse_from_rfc3339(&time)
-                    .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0) as u64)
-                    .unwrap_or_else(|_| now_ns());
 
                 let depth_update = DepthUpdate {
                     exchange: Exchange::Coinbase,
                     symbol: product_id,
-                    timestamp_ns,
+                    timestamp_ns: now_ns(),
                     bids: bid_updates,
                     asks: ask_updates,
                     is_snapshot: false,
@@ -160,22 +157,24 @@ pub async fn stream_orderbook(
 
                 update_count += 1;
                 if update_count % 100 == 0 {
-                    let (bids, asks) = book.get_depth(5);
-                    if let (Some(bb), Some(ba)) = (bids.first(), asks.first()) {
-                        info!(
-                            "[Coinbase] Updates: {} | BBO: {} / {} | Spread: {:.8}",
-                            update_count,
-                            bb.0,
-                            ba.0,
-                            ba.0.to_f64() - bb.0.to_f64()
-                        );
-                    }
+                    let mid = book.mid_price().unwrap_or(0.0);
+                    let spread = book.spread().map(|s| s.to_f64()).unwrap_or(0.0);
+                    info!(
+                        "[Coinbase/{}] updates={}, mid={:.2}, spread={:.8}, orders={}",
+                        symbol,
+                        update_count,
+                        mid,
+                        spread,
+                        book.total_orders()
+                    );
                 }
             }
             CoinbaseMessage::Subscriptions { channels } => {
-                info!("Coinbase subscription confirmed: {:?}", channels);
+                info!("Coinbase subscriptions confirmed: {:?}", channels);
             }
-            CoinbaseMessage::Other => {}
+            CoinbaseMessage::Other => {
+                debug!("Received unknown Coinbase message type");
+            }
         }
     }
 
@@ -183,15 +182,16 @@ pub async fn stream_orderbook(
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Internal helpers
 // ---------------------------------------------------------------------------
 
-fn parse_levels(raw: &[(String, String)]) -> Vec<(f64, f64)> {
+/// Parse string price/quantity pairs into (Price, Quantity) tuples.
+fn parse_levels(raw: &[(String, String)]) -> Vec<(Price, Quantity)> {
     raw.iter()
-        .filter_map(|(price, qty)| {
-            let p = price.parse::<f64>().ok()?;
-            let q = qty.parse::<f64>().ok()?;
-            Some((p, q))
+        .filter_map(|(price_str, qty_str)| {
+            let price: f64 = price_str.parse().ok()?;
+            let qty: f64 = qty_str.parse().ok()?;
+            Some((Price::from_f64(price), Quantity::from_f64(qty)))
         })
         .collect()
 }

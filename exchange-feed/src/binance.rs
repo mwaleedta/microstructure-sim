@@ -10,7 +10,7 @@ use orderbook_core::book::OrderBook;
 use orderbook_core::types::*;
 use serde::Deserialize;
 use tokio_tungstenite::connect_async;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 // ---------------------------------------------------------------------------
 // Binance message types
@@ -103,48 +103,43 @@ pub async fn stream_orderbook(
             _ => continue,
         };
 
-        let update: BinanceDepthUpdate = serde_json::from_str(&text)?;
+        let update: BinanceDepthUpdate = match serde_json::from_str(&text) {
+            Ok(u) => u,
+            Err(e) => {
+                debug!("Failed to parse Binance message: {}", e);
+                continue;
+            }
+        };
 
-        // Drop stale updates (before our snapshot)
+        // Binance sequencing: drop stale updates
         if update.final_update_id <= last_update_id {
             continue;
         }
 
-        // Gap detection
-        if update.first_update_id > last_update_id + 1 {
-            warn!(
-                "Binance gap detected: expected {}, got {}. Re-snapshotting.",
-                last_update_id + 1,
-                update.first_update_id
-            );
-            // In production, we'd re-snapshot here
-        }
-
-        last_update_id = update.final_update_id;
-
         let depth_update = DepthUpdate {
             exchange: Exchange::Binance,
-            symbol: update.symbol.clone(),
-            timestamp_ns: update.event_time * 1_000_000, // ms -> ns
+            symbol: symbol.to_string(),
+            timestamp_ns: now_ns(),
             bids: parse_levels(&update.bids),
             asks: parse_levels(&update.asks),
             is_snapshot: false,
         };
 
         apply_depth_update(&book, &depth_update);
-
+        last_update_id = update.final_update_id;
         update_count += 1;
+
         if update_count % 100 == 0 {
-            let (bids, asks) = book.get_depth(5);
-            if let (Some(bb), Some(ba)) = (bids.first(), asks.first()) {
-                info!(
-                    "[Binance] Updates: {} | BBO: {} / {} | Spread: {:.8}",
-                    update_count,
-                    bb.0,
-                    ba.0,
-                    ba.0.to_f64() - bb.0.to_f64()
-                );
-            }
+            let mid = book.mid_price().unwrap_or(0.0);
+            let spread = book.spread().map(|s| s.to_f64()).unwrap_or(0.0);
+            info!(
+                "[Binance/{}] updates={}, mid={:.2}, spread={:.8}, orders={}",
+                symbol,
+                update_count,
+                mid,
+                spread,
+                book.total_orders()
+            );
         }
     }
 
@@ -152,9 +147,10 @@ pub async fn stream_orderbook(
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Internal helpers
 // ---------------------------------------------------------------------------
 
+/// Fetch a depth snapshot from the Binance REST API.
 async fn fetch_snapshot(
     symbol: &str,
     limit: usize,
@@ -162,18 +158,20 @@ async fn fetch_snapshot(
     let url = format!(
         "https://api.binance.com/api/v3/depth?symbol={}&limit={}",
         symbol.to_uppercase(),
-        limit.min(5000)
+        limit
     );
+
     let resp = reqwest::get(&url).await?.json::<BinanceSnapshot>().await?;
     Ok(resp)
 }
 
-fn parse_levels(raw: &[(String, String)]) -> Vec<(f64, f64)> {
+/// Parse string price/quantity pairs into (Price, Quantity) tuples.
+fn parse_levels(raw: &[(String, String)]) -> Vec<(Price, Quantity)> {
     raw.iter()
-        .filter_map(|(price, qty)| {
-            let p = price.parse::<f64>().ok()?;
-            let q = qty.parse::<f64>().ok()?;
-            Some((p, q))
+        .filter_map(|(price_str, qty_str)| {
+            let price: f64 = price_str.parse().ok()?;
+            let qty: f64 = qty_str.parse().ok()?;
+            Some((Price::from_f64(price), Quantity::from_f64(qty)))
         })
         .collect()
 }
