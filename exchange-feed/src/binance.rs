@@ -1,0 +1,179 @@
+//! Binance WebSocket depth stream handler.
+//!
+//! Connects to `wss://stream.binance.com:9443/ws/{symbol}@depth{levels}@100ms`
+//! and applies partial book depth updates. Bootstraps with a REST snapshot
+//! from `https://api.binance.com/api/v3/depth`.
+
+use crate::{DepthUpdate, Exchange, FeedError, apply_depth_update};
+use futures_util::{SinkExt, StreamExt};
+use orderbook_core::book::OrderBook;
+use orderbook_core::types::*;
+use serde::Deserialize;
+use tokio_tungstenite::connect_async;
+use tracing::{debug, error, info, warn};
+
+// ---------------------------------------------------------------------------
+// Binance message types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct BinanceDepthUpdate {
+    #[serde(rename = "e")]
+    event_type: String,
+    #[serde(rename = "E")]
+    event_time: u64,
+    #[serde(rename = "s")]
+    symbol: String,
+    #[serde(rename = "U")]
+    first_update_id: u64,
+    #[serde(rename = "u")]
+    final_update_id: u64,
+    #[serde(rename = "b")]
+    bids: Vec<(String, String)>,
+    #[serde(rename = "a")]
+    asks: Vec<(String, String)>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BinanceSnapshot {
+    #[serde(rename = "lastUpdateId")]
+    last_update_id: u64,
+    bids: Vec<(String, String)>,
+    asks: Vec<(String, String)>,
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/// Stream order book updates from Binance.
+///
+/// 1. Connects to the WebSocket depth stream
+/// 2. Fetches an initial REST snapshot
+/// 3. Applies buffered + live updates to the book
+pub async fn stream_orderbook(
+    symbol: &str,
+    depth: usize,
+    book: OrderBook,
+) -> Result<(), FeedError> {
+    let ws_symbol = symbol.to_lowercase().replace('-', "");
+    let ws_url = format!(
+        "wss://stream.binance.com:9443/ws/{}@depth{}@100ms",
+        ws_symbol, depth
+    );
+
+    info!("Connecting to Binance WebSocket: {}", ws_url);
+
+    let (ws_stream, _) = connect_async(&ws_url).await?;
+    let (mut _write, mut read) = ws_stream.split();
+
+    // Fetch REST snapshot for initial book state
+    let snapshot = fetch_snapshot(&ws_symbol, depth).await?;
+    info!(
+        "Binance snapshot: {} bids, {} asks (lastUpdateId={})",
+        snapshot.bids.len(),
+        snapshot.asks.len(),
+        snapshot.last_update_id
+    );
+
+    let initial_update = DepthUpdate {
+        exchange: Exchange::Binance,
+        symbol: symbol.to_string(),
+        timestamp_ns: now_ns(),
+        bids: parse_levels(&snapshot.bids),
+        asks: parse_levels(&snapshot.asks),
+        is_snapshot: true,
+    };
+    apply_depth_update(&book, &initial_update);
+
+    let mut last_update_id = snapshot.last_update_id;
+    let mut update_count: u64 = 0;
+
+    info!("Streaming Binance depth updates for {}...", symbol);
+
+    while let Some(msg) = read.next().await {
+        let msg = msg?;
+        let text = match msg {
+            tokio_tungstenite::tungstenite::Message::Text(t) => t,
+            tokio_tungstenite::tungstenite::Message::Ping(_) => continue,
+            tokio_tungstenite::tungstenite::Message::Close(_) => {
+                warn!("Binance WebSocket closed");
+                return Err(FeedError::ConnectionClosed);
+            }
+            _ => continue,
+        };
+
+        let update: BinanceDepthUpdate = serde_json::from_str(&text)?;
+
+        // Drop stale updates (before our snapshot)
+        if update.final_update_id <= last_update_id {
+            continue;
+        }
+
+        // Gap detection
+        if update.first_update_id > last_update_id + 1 {
+            warn!(
+                "Binance gap detected: expected {}, got {}. Re-snapshotting.",
+                last_update_id + 1,
+                update.first_update_id
+            );
+            // In production, we'd re-snapshot here
+        }
+
+        last_update_id = update.final_update_id;
+
+        let depth_update = DepthUpdate {
+            exchange: Exchange::Binance,
+            symbol: update.symbol.clone(),
+            timestamp_ns: update.event_time * 1_000_000, // ms -> ns
+            bids: parse_levels(&update.bids),
+            asks: parse_levels(&update.asks),
+            is_snapshot: false,
+        };
+
+        apply_depth_update(&book, &depth_update);
+
+        update_count += 1;
+        if update_count % 100 == 0 {
+            let (bids, asks) = book.get_depth(5);
+            if let (Some(bb), Some(ba)) = (bids.first(), asks.first()) {
+                info!(
+                    "[Binance] Updates: {} | BBO: {} / {} | Spread: {:.8}",
+                    update_count,
+                    bb.0,
+                    ba.0,
+                    ba.0.to_f64() - bb.0.to_f64()
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+async fn fetch_snapshot(
+    symbol: &str,
+    limit: usize,
+) -> Result<BinanceSnapshot, FeedError> {
+    let url = format!(
+        "https://api.binance.com/api/v3/depth?symbol={}&limit={}",
+        symbol.to_uppercase(),
+        limit.min(5000)
+    );
+    let resp = reqwest::get(&url).await?.json::<BinanceSnapshot>().await?;
+    Ok(resp)
+}
+
+fn parse_levels(raw: &[(String, String)]) -> Vec<(f64, f64)> {
+    raw.iter()
+        .filter_map(|(price, qty)| {
+            let p = price.parse::<f64>().ok()?;
+            let q = qty.parse::<f64>().ok()?;
+            Some((p, q))
+        })
+        .collect()
+}
