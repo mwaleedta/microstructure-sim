@@ -186,6 +186,7 @@ impl QueueEstimator {
     ) {
         let delta_q = new_qty - old_qty; // Negative when depth decreases
 
+        let cancel_k = self.config.cancellation_bias_k;
         for order in self.tracked.values_mut() {
             if order.price != price {
                 continue;
@@ -194,10 +195,18 @@ impl QueueEstimator {
             if delta_q < 0.0 {
                 // Depth decreased -- estimate how much was ahead of us
                 let reduction = delta_q.abs();
-                let p_ahead = self.cancellation_probability(
-                    order.estimated_ahead,
-                    order.last_known_depth,
-                );
+                let p_ahead = {
+                    let v = order.estimated_ahead;
+                    let d = order.last_known_depth;
+                    if d <= 0.0 || v <= 0.0 {
+                        0.0
+                    } else {
+                        let normalized = (v / d).clamp(0.0, 1.0);
+                        // Back-biased: orders near back have less removed from ahead
+                        // cancel_k < 0 means cancellations are biased toward back of queue
+                        normalized * (1.0 + cancel_k * normalized)
+                    }
+                };
 
                 let removed_ahead = p_ahead * reduction;
                 order.estimated_ahead =

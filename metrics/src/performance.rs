@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn test_sharpe_positive_returns() {
         let mut t = PerformanceTracker::new(0.0, (252.0_f64).sqrt());
-        for _ in 0..100 { t.record_return(0.001); }
+        for i in 0..100 { t.record_return(if i % 2 == 0 { 0.0005 } else { 0.0015 }); }
         assert!(t.sharpe_ratio() > 0.0);
     }
 }

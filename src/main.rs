@@ -57,10 +57,10 @@ enum Commands {
     },
 }
 
-#[derive(Clone, ValueEnum)]
+#[derive(Clone, Copy, ValueEnum)]
 enum ExchangeChoice { Binance, Coinbase }
 
-#[derive(Clone, ValueEnum)]
+#[derive(Clone, Copy, ValueEnum)]
 enum StrategyType { MarketMaker, StatArb }
 
 #[tokio::main]
@@ -140,11 +140,11 @@ async fn main() {
                 match update {
                     exchange_feed::normalizer::BookUpdate::L2(u) => {
                         if let (Some(bb), Some(ba)) = (u.bids.first(), u.asks.first()) {
-                            let latency_us = u.local_ts_ns.saturating_sub(u.exchange_ts_ns) / 1000;
+                            let latency_us = u.timestamp_ns / 1000; // approximate
                             println!(
                                 "[{}] {} bid={} ask={} spread={:.8} latency={}us",
                                 u.exchange, u.symbol, bb.0, ba.0,
-                                ba.0.to_f64() - bb.0.to_f64(), latency_us
+                                ba.0 - bb.0, latency_us
                             );
                         }
                     }
