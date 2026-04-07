@@ -12,6 +12,7 @@
 
 pub mod binance;
 pub mod coinbase;
+pub mod normalizer;
 
 use orderbook_core::book::OrderBook;
 use orderbook_core::types::*;
