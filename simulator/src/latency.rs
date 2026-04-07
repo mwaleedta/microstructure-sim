@@ -10,7 +10,7 @@
 //! - Gaussian: normal distribution with mean and std
 //! - Empirical: samples from a recorded latency distribution
 
-use rand::Rng;
+use rand::{Rng, RngCore};
 use rand_distr::{Distribution, LogNormal, Normal};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -22,7 +22,7 @@ use std::collections::VecDeque;
 /// Trait for generating latency samples.
 pub trait LatencyModel: Send + Sync {
     /// Sample a latency value in nanoseconds.
-    fn sample_ns(&self, rng: &mut impl Rng) -> u64;
+    fn sample_ns(&self, rng: &mut dyn RngCore) -> u64;
 
     /// Get the expected (mean) latency in nanoseconds.
     fn mean_ns(&self) -> u64;
@@ -60,7 +60,7 @@ impl FixedLatency {
 }
 
 impl LatencyModel for FixedLatency {
-    fn sample_ns(&self, _rng: &mut impl Rng) -> u64 {
+    fn sample_ns(&self, _rng: &mut dyn RngCore) -> u64 {
         self.latency_ns
     }
 
@@ -99,7 +99,7 @@ impl GaussianLatency {
 }
 
 impl LatencyModel for GaussianLatency {
-    fn sample_ns(&self, rng: &mut impl Rng) -> u64 {
+    fn sample_ns(&self, rng: &mut dyn RngCore) -> u64 {
         let dist =
             Normal::new(self.mean_ns as f64, self.std_ns as f64).unwrap();
         let sample = dist.sample(rng);
@@ -142,7 +142,7 @@ impl LogNormalLatency {
 }
 
 impl LatencyModel for LogNormalLatency {
-    fn sample_ns(&self, rng: &mut impl Rng) -> u64 {
+    fn sample_ns(&self, rng: &mut dyn RngCore) -> u64 {
         let dist = LogNormal::new(self.mu, self.sigma).unwrap();
         dist.sample(rng) as u64
     }
@@ -182,7 +182,8 @@ impl EmpiricalLatency {
         if self.samples.is_empty() {
             return 0;
         }
-        let idx = (p * (self.samples.len() - 1) as f64) as usize;
+        let idx = (p * self.samples.len() as f64).ceil() as usize;
+        let idx = if idx == 0 { 0 } else { idx - 1 };
         self.samples[idx.min(self.samples.len() - 1)]
     }
 
@@ -198,7 +199,7 @@ impl EmpiricalLatency {
 }
 
 impl LatencyModel for EmpiricalLatency {
-    fn sample_ns(&self, rng: &mut impl Rng) -> u64 {
+    fn sample_ns(&self, rng: &mut dyn RngCore) -> u64 {
         if self.samples.is_empty() {
             return 0;
         }
@@ -267,17 +268,17 @@ impl LatencySimulator {
     }
 
     /// Sample feed latency.
-    pub fn sample_feed(&self, rng: &mut impl Rng) -> u64 {
+    pub fn sample_feed(&self, rng: &mut dyn RngCore) -> u64 {
         self.feed_latency.sample_ns(rng)
     }
 
     /// Sample order latency.
-    pub fn sample_order(&self, rng: &mut impl Rng) -> u64 {
+    pub fn sample_order(&self, rng: &mut dyn RngCore) -> u64 {
         self.order_latency.sample_ns(rng)
     }
 
     /// Sample cancel latency.
-    pub fn sample_cancel(&self, rng: &mut impl Rng) -> u64 {
+    pub fn sample_cancel(&self, rng: &mut dyn RngCore) -> u64 {
         self.cancel_latency.sample_ns(rng)
     }
 }

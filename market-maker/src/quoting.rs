@@ -272,8 +272,9 @@ impl QuotingEngine {
         self.active_asks.clear();
 
         for (i, (price, qty)) in bids.iter().enumerate() {
+            let oid = self.gen_order_id();
             self.active_bids.push(ActiveQuote {
-                order_id: self.gen_order_id(),
+                order_id: oid,
                 side: Side::Bid,
                 price: *price,
                 quantity: *qty,
@@ -282,8 +283,9 @@ impl QuotingEngine {
             });
         }
         for (i, (price, qty)) in asks.iter().enumerate() {
+            let oid = self.gen_order_id();
             self.active_asks.push(ActiveQuote {
-                order_id: self.gen_order_id(),
+                order_id: oid,
                 side: Side::Ask,
                 price: *price,
                 quantity: *qty,
