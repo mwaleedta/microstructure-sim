@@ -16,3 +16,4 @@ reqwest.workspace = true
 flate2.workspace = true
 crossbeam-channel.workspace = true
 chrono.workspace = true
+crypto-orderbook = { version = "0.5.2", default-features = false }

@@ -5,6 +5,8 @@
 //! from `https://api.binance.com/api/v3/depth`.
 
 use crate::{DepthUpdate, Exchange, FeedError, apply_depth_update};
+use crypto_orderbook::Market;
+use crypto_orderbook::orderbook::sync::{Live, live};
 use futures_util::{SinkExt, StreamExt};
 use orderbook_core::book::OrderBook;
 use orderbook_core::types::*;
@@ -105,19 +107,30 @@ pub async fn stream_orderbook(
 
         let update: BinanceDepthUpdate = serde_json::from_str(&text)?;
 
-        // Drop stale updates (before our snapshot)
-        if update.final_update_id <= last_update_id {
-            continue;
-        }
-
-        // Gap detection
-        if update.first_update_id > last_update_id + 1 {
-            warn!(
-                "Binance gap detected: expected {}, got {}. Re-snapshotting.",
-                last_update_id + 1,
-                update.first_update_id
-            );
-            // In production, we'd re-snapshot here
+        match sequence(last_update_id, &update) {
+            // Drop stale updates (before our snapshot)
+            Live::Ignore => continue,
+            Live::Gap { expected, got } => {
+                warn!(
+                    "Binance gap detected: expected {}, got {}. Re-snapshotting.",
+                    expected, got
+                );
+                let snapshot = fetch_snapshot(&ws_symbol, depth).await?;
+                apply_depth_update(
+                    &book,
+                    &DepthUpdate {
+                        exchange: Exchange::Binance,
+                        symbol: symbol.to_string(),
+                        timestamp_ns: now_ns(),
+                        bids: parse_levels(&snapshot.bids),
+                        asks: parse_levels(&snapshot.asks),
+                        is_snapshot: true,
+                    },
+                );
+                last_update_id = snapshot.last_update_id;
+                continue;
+            }
+            Live::Apply => {}
         }
 
         last_update_id = update.final_update_id;
@@ -166,6 +179,19 @@ async fn fetch_snapshot(
     );
     let resp = reqwest::get(&url).await?.json::<BinanceSnapshot>().await?;
     Ok(resp)
+}
+
+/// Binance spot sequencing, decided by `crypto-orderbook`: an event must
+/// start at or before `last_update_id + 1`, otherwise the book has a hole.
+fn sequence(last_update_id: u64, update: &BinanceDepthUpdate) -> Live {
+    let ids = crypto_orderbook::DepthUpdate {
+        first_update_id: update.first_update_id,
+        last_update_id: update.final_update_id,
+        prev_last_update_id: None,
+        bids: Vec::new(),
+        asks: Vec::new(),
+    };
+    live(Market::Spot, last_update_id, &ids)
 }
 
 fn parse_levels(raw: &[(String, String)]) -> Vec<(f64, f64)> {
@@ -240,4 +266,35 @@ fn now_ns() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(first: u64, last: u64) -> BinanceDepthUpdate {
+        BinanceDepthUpdate {
+            event_type: "depthUpdate".into(),
+            event_time: 0,
+            symbol: "BTCUSDT".into(),
+            first_update_id: first,
+            final_update_id: last,
+            bids: Vec::new(),
+            asks: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn gap_forces_resnapshot_instead_of_applying() {
+        assert_eq!(sequence(102, &event(101, 102)), Live::Ignore);
+        assert_eq!(sequence(100, &event(101, 102)), Live::Apply);
+        // 103..=104 was dropped; 105 must not be applied on top.
+        assert_eq!(
+            sequence(102, &event(105, 105)),
+            Live::Gap {
+                expected: 103,
+                got: 105
+            }
+        );
+    }
 }
